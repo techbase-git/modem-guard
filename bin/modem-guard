@@ -53,6 +53,10 @@ STATE_FILE=/run/modem-guard.state
 # this is ignored and every tick probes, because that is when the result of a
 # repair action needs to be seen without delay.
 : "${MODEM_PING_INTERVAL:=60}"
+# How often to record one line saying what the modem is doing, even when
+# nothing has changed [s]. Without it a healthy system logs nothing at all,
+# which reads exactly like a supervisor that is not running. 0 turns it off.
+: "${MODEM_HEARTBEAT:=600}"
 # YES = record every tick, not just changes and decisions.
 : "${MODEM_DEBUG:=NO}"
 
@@ -86,25 +90,32 @@ modem_state() {
         | head -n1 | cut -d: -f2- | tr -d ' '
 }
 
+# NetworkManager names a GSM device after its control port, e.g. ttyUSB2,
+# which is not a network interface. The data path lives on a separate IP
+# interface - ppp0 for PPP bearers, wwanN for QMI/MBIM - so the device has to
+# be asked for it.
+modem_iface() {
+    if [ -n "$MODEM_IFACE" ]; then
+        echo "$MODEM_IFACE"
+        return 0
+    fi
+    dev=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+        | awk -F: '$2=="gsm"{print $1; exit}')
+    [ -n "$dev" ] || return 1
+    nmcli -t -f GENERAL.IP-IFACE device show "$dev" 2>/dev/null | cut -d: -f2
+}
+
+modem_signal() {
+    mmcli -m "$1" -K 2>/dev/null \
+        | grep 'modem.generic.signal-quality.value' \
+        | head -n1 | cut -d: -f2- | tr -d ' '
+}
+
 # The ping must go out through the modem, otherwise a working Ethernet uplink
 # would mask a dead modem.
 ping_ok() {
-    iface="$MODEM_IFACE"
-    if [ -z "$iface" ]; then
-        # NetworkManager names a GSM device after its control port, e.g.
-        # ttyUSB2, which is not a network interface. The data path lives on a
-        # separate IP interface - ppp0 for PPP bearers, wwanN for QMI/MBIM -
-        # so the device has to be asked for it.
-        dev=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
-            | awk -F: '$2=="gsm"{print $1; exit}')
-        if [ -n "$dev" ]; then
-            iface=$(nmcli -t -f GENERAL.IP-IFACE device show "$dev" 2>/dev/null \
-                | cut -d: -f2)
-        fi
-        debug "interface auto-detected: ${iface:-none} (device ${dev:-none})"
-    else
-        debug "interface from config: $iface"
-    fi
+    iface=$(modem_iface)
+    debug "probe interface: ${iface:-none}"
 
     if [ -z "$iface" ] || [ ! -d "/sys/class/net/$iface" ]; then
         # An unbound ping would leave through Ethernet and report a dead modem
@@ -135,20 +146,23 @@ read_state() {
     not_before=0
     last_state=none
     last_probe=0
+    last_heartbeat=0
     if [ -r "$STATE_FILE" ]; then
-        read -r round phase not_before last_state last_probe < "$STATE_FILE" 2>/dev/null || true
+        read -r round phase not_before last_state last_probe last_heartbeat \
+            < "$STATE_FILE" 2>/dev/null || true
     fi
     # Guard against a truncated or garbage state file.
     case "$round" in ''|*[!0-9]*) round=0 ;; esac
     case "$phase" in ''|*[!0-9]*) phase=0 ;; esac
     case "$not_before" in ''|*[!0-9]*) not_before=0 ;; esac
     case "$last_probe" in ''|*[!0-9]*) last_probe=0 ;; esac
+    case "$last_heartbeat" in ''|*[!0-9]*) last_heartbeat=0 ;; esac
     [ -n "$last_state" ] || last_state=none
     [ "$phase" -le 2 ] || phase=0
 }
 
 save_state() {
-    echo "$round $phase $not_before $state $last_probe" > "$STATE_FILE"
+    echo "$round $phase $not_before $state $last_probe $last_heartbeat" > "$STATE_FILE"
 }
 
 # Pause after a failed round: 1 min, then 5 min, then 15 min from there on.
@@ -183,6 +197,20 @@ debug "modem state: $state"
 changed=0
 [ "$state" != "$last_state" ] && changed=1
 [ "$changed" -eq 1 ] && log "modem state: $state (round $round, phase $phase)"
+
+# One line every so often saying what is going on, whether or not anything
+# changed. A healthy link produces no other output, and silence is
+# indistinguishable from a supervisor that died.
+if [ "$MODEM_HEARTBEAT" -gt 0 ] \
+   && [ $((now - last_heartbeat)) -ge "$MODEM_HEARTBEAT" ]; then
+    last_heartbeat=$now
+    if [ -n "$path" ]; then
+        log "heartbeat: state=$state round=$round iface=$(modem_iface)" \
+            "signal=$(modem_signal "$path")%"
+    else
+        log "heartbeat: state=$state round=$round - no modem on D-Bus"
+    fi
+fi
 
 # A locked SIM is never reset: a reset cannot supply a PIN, and repeated
 # attempts would burn PIN retries and lock the card to PUK.

@@ -134,6 +134,7 @@ MODEM_IFACE=
 MODEM_PING_INTERVAL=60
 MODEM_SETTLE_SOFT=30
 MODEM_SETTLE_HARD=60
+MODEM_HEARTBEAT=600
 MODEM_DEBUG=NO
 ```
 
@@ -359,9 +360,20 @@ journalctl -u modem-soft-reset.service -u modem-hard-reset.service
 
 ### Log levels
 
-Normally only state changes and decisions are recorded, so the journal stays
-readable at a 10 s tick. Every intervention line carries its reason, so a
-production log tells you *why* a reset happened:
+Normally only state changes, decisions and a periodic heartbeat are recorded,
+so the journal stays readable at a 10 s tick.
+
+The heartbeat exists because a healthy link changes nothing and decides
+nothing, so without it the guard would log once and then stay silent forever -
+which reads exactly like a supervisor that has died. One line every
+`MODEM_HEARTBEAT` seconds says what it sees:
+
+```
+heartbeat: state=connected round=0 iface=ppp0 signal=67%
+```
+
+Every intervention line carries its reason, so a production log tells you
+*why* a reset happened:
 
 ```
 modem state: failed (round 0, phase 0)
