@@ -40,6 +40,8 @@ CONF=/etc/modem.conf
 # and the level at which the modem is powered.
 : "${MODEM_RESET_ACTIVE:=high}"
 : "${MODEM_POWER_ACTIVE:=high}"
+# How long to wait for the I2C bus and the gpiochip to appear [s].
+: "${MODEM_GPIO_WAIT:=30}"
 
 # On the expander boards this supports, the modem lines are always wired to
 # the same two offsets, so they need no configuring. CPU-GPIO boards differ
@@ -88,6 +90,36 @@ expander_chip() {
     return 1
 }
 
+# At boot this unit starts before the I2C bus is registered, and the driver
+# needs a moment more to register the gpiochip after the device is created.
+# Both are waited for, with a limit. Without the wait the unit fails once,
+# stays failed - systemd does not retry a oneshot - and the modem is never
+# powered, even though the hardware appears seconds later.
+wait_for_path() {
+    waited=0
+    while [ ! -e "$1" ]; do
+        [ "$waited" -ge "$MODEM_GPIO_WAIT" ] && return 1
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "$waited" -gt 0 ] && echo "waited ${waited}s for $1"
+    return 0
+}
+
+# Sets "chip" on success.
+wait_for_chip() {
+    waited=0
+    while :; do
+        chip=$(expander_chip) && {
+            [ "$waited" -gt 0 ] && echo "waited ${waited}s for the gpiochip"
+            return 0
+        }
+        [ "$waited" -ge "$MODEM_GPIO_WAIT" ] && return 1
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
 backend_init() {
     case "$MODEM_GPIO_BACKEND" in
         soc)
@@ -96,18 +128,21 @@ backend_init() {
         expander)
             modprobe gpio-mcp23s08 2>/dev/null || true
 
+            bus="/sys/bus/i2c/devices/i2c-$MODEM_I2C_BUS"
+            wait_for_path "$bus" \
+                || die "no I2C bus $MODEM_I2C_BUS after ${MODEM_GPIO_WAIT}s - is I2C enabled?"
+
             dev=$(i2c_device_path)
             if [ -e "$dev" ]; then
                 echo "expander already present at $dev"
             else
-                bus="/sys/bus/i2c/devices/i2c-$MODEM_I2C_BUS"
-                [ -d "$bus" ] || die "no I2C bus $MODEM_I2C_BUS - is I2C enabled?"
                 echo "$MODEM_I2C_CHIP $MODEM_I2C_ADDR" > "$bus/new_device" \
                     || die "could not instantiate $MODEM_I2C_CHIP at $MODEM_I2C_ADDR"
                 echo "instantiated $MODEM_I2C_CHIP at $MODEM_I2C_ADDR on bus $MODEM_I2C_BUS"
             fi
 
-            chip=$(expander_chip) || die "expander registered no gpiochip"
+            wait_for_chip \
+                || die "expander registered no gpiochip after ${MODEM_GPIO_WAIT}s"
             echo "expander available as $chip"
             ;;
         *)

@@ -122,6 +122,7 @@ MODEM_GPIO_BACKEND=expander
 MODEM_I2C_BUS=10
 MODEM_I2C_ADDR=0x21
 MODEM_I2C_CHIP=mcp23008
+MODEM_GPIO_WAIT=30
 MODEM_RESET_GPIO=
 MODEM_RESET_ACTIVE=high
 MODEM_RESET_PULSE=1
@@ -150,6 +151,12 @@ MODEM_DEBUG=NO
 `MODEM_I2C_ADDR` on `MODEM_I2C_BUS`; the resulting gpiochip number is looked
 up rather than assumed, because it depends on what else is registered. This
 needs the `gpiod` package, which the package recommends.
+
+At boot that unit starts before the I2C bus is registered, so it waits up to
+`MODEM_GPIO_WAIT` seconds for the bus, and again for the driver to register
+the gpiochip. The wait matters: systemd does not retry a `oneshot`, so giving
+up on the first look would leave the unit failed for good and the modem
+unpowered until someone started it by hand.
 
 **A board without an expander must set `MODEM_GPIO_BACKEND=soc` explicitly.**
 Left on the default it fails at boot with a message about a missing I2C bus,
