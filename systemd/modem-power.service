@@ -1,0 +1,18 @@
+[Unit]
+Description=Power on the modem via GPIO
+Documentation=file:/etc/modem.conf
+# Modem power must be up before ModemManager probes for it, and the GPIO
+# backend must be ready before the line can be driven.
+After=modem-gpio-init.service
+Requires=modem-gpio-init.service
+Before=ModemManager.service
+Wants=ModemManager.service
+
+[Service]
+Type=oneshot
+# The GPIO output state survives the process exit, so no daemon is needed.
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modem-gpio poweron
+
+[Install]
+WantedBy=multi-user.target ModemManager.service

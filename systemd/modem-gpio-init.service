@@ -1,0 +1,16 @@
+[Unit]
+Description=Prepare the modem GPIO backend
+Documentation=file:/etc/modem.conf
+# The line has to be drivable before anything tries to power the modem.
+Before=modem-power.service
+Wants=modem-power.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Does nothing when the lines are CPU GPIOs. With an I2C expander it loads
+# the driver and instantiates the chip, and is safe to run again.
+ExecStart=/usr/sbin/modem-gpio init
+
+[Install]
+WantedBy=multi-user.target

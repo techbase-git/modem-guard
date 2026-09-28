@@ -1,0 +1,11 @@
+[Unit]
+Description=Hard reset the modem (GPIO power cycle)
+Documentation=file:/etc/modem.conf
+After=modem-gpio-init.service
+Requires=modem-gpio-init.service
+
+[Service]
+Type=oneshot
+# Cuts modem power entirely and restores it. Heavier than the reset line,
+# so this is the second rung of the ladder.
+ExecStart=/usr/sbin/modem-gpio powercycle

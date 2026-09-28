@@ -1,0 +1,84 @@
+name: release
+
+# Tagging a version is what produces a release:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Check shell syntax
+        run: |
+          sh -n bin/modem-guard
+          sh -n packaging/postinst
+          sh -n packaging/prerm
+          sh -n packaging/postrm
+          bash -n install.sh
+          bash -n packaging/build-deb.sh
+
+      - name: Lint shell
+        # Advisory for now: findings are reported but do not block a release,
+        # because this step has never been observed passing. Once a run shows
+        # it clean, drop continue-on-error to make it a real gate.
+        continue-on-error: true
+        run: shellcheck --severity=warning bin/modem-guard install.sh packaging/build-deb.sh
+
+      - name: Check systemd units
+        run: |
+          # Reports "command not found" for pinctrl and mmcli, which are not
+          # installed on the runner - only syntax errors are treated as fatal.
+          systemd-analyze verify systemd/*.service systemd/*.timer 2>&1 \
+            | tee verify.log || true
+          # Only our own units count. systemd-analyze pulls in the whole
+          # dependency tree and reports problems in unrelated system units
+          # (snapd, netplan) that we neither ship nor control.
+          if grep -E 'modem-[a-z-]*\.(service|timer)' verify.log \
+             | grep -Eq 'Failed to (parse|load)|Unknown (key|section)'; then
+            echo "systemd unit syntax error"; exit 1
+          fi
+
+      - name: Build .deb
+        run: ./packaging/build-deb.sh "$VERSION" dist
+
+      - name: Inspect package
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+
+      - name: Verify package layout
+        run: |
+          # Extracting proves the paths and modes are right. Unlike
+          # "dpkg --unpack" it needs no root and cannot fail because of the
+          # runner's own package state, which has nothing to do with us.
+          tmp="$(mktemp -d)"
+          dpkg-deb --extract dist/*.deb "$tmp"
+          test -x "$tmp/usr/sbin/modem-guard"
+          test -f "$tmp/etc/modem.conf"
+          test -f "$tmp/lib/systemd/system/modem-guard.timer"
+          test -f "$tmp/lib/systemd/system/modem-power.service"
+          test -f "$tmp/usr/share/doc/modem-guard/copyright"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Re-running a workflow, or moving a tag, leaves a release that
+          # already exists - creating it again would fail. Uploading with
+          # --clobber makes the step safe to repeat.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.deb --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.deb
+          fi

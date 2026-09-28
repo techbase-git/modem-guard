@@ -1,0 +1,282 @@
+#!/bin/sh
+# modem-guard - the single decision point for modem recovery.
+#
+# Run every 10 s by modem-guard.timer. The fast tick exists so that every
+# configured interval is actually honoured: a settle window of 20 s means
+# 20 s, not "the next time a slow timer happens to fire".
+#
+# Recovery works in ROUNDS. One round is both repair actions performed one
+# after another, each followed by a window in which the modem is given the
+# chance to come back and let NetworkManager reconnect:
+#
+#     soft reset  ->  window, up to MODEM_SETTLE_SOFT
+#                 ->  still down? hard reset
+#                 ->  window, up to MODEM_SETTLE_HARD
+#
+# The settle windows are UPPER BOUNDS, not fixed delays: health is evaluated
+# on every tick, before any window is considered, so a modem that recovers
+# after 20 s is detected on the next tick rather than sitting out the rest of
+# the window. Only when a whole round fails does the pause between rounds
+# apply: 1 min after round 1, 5 min after round 2, 15 min after that. Rounds
+# repeat until connectivity returns.
+#
+# Logging has two levels. Normally only state changes and decisions are
+# recorded, so the journal stays readable despite the fast tick. With
+# MODEM_DEBUG=YES every tick is recorded as well, including the wake-up
+# itself, the remaining windows and individual ping results.
+#
+# Ownership rules this script respects:
+#   - NetworkManager owns connecting and reconnecting. This script never
+#     brings a connection up; after a reset NetworkManager does it itself.
+#   - ModemManager owns modem state. This script reads it, never second
+#     guesses it.
+#   - The reset actions live in separate systemd units, so they can also be
+#     triggered by hand.
+
+set -u
+
+CONF=/etc/modem.conf
+# /run is tmpfs: recovery state deliberately resets on reboot.
+STATE_FILE=/run/modem-guard.state
+
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+: "${MODEM_PING_TARGET:=8.8.8.8}"
+: "${MODEM_PING_TARGET_2:=}"
+: "${MODEM_IFACE:=}"
+# Upper bound on how long the modem is given after each repair action before
+# the next rung is used. Recovery inside the window is picked up immediately.
+: "${MODEM_SETTLE_SOFT:=30}"
+: "${MODEM_SETTLE_HARD:=60}"
+# How often the link is probed while it is healthy. During a recovery round
+# this is ignored and every tick probes, because that is when the result of a
+# repair action needs to be seen without delay.
+: "${MODEM_PING_INTERVAL:=60}"
+# YES = record every tick, not just changes and decisions.
+: "${MODEM_DEBUG:=NO}"
+
+# stdout is captured by the journal.
+# log   - always recorded: state changes, decisions, warnings.
+# debug - only with MODEM_DEBUG=YES: every tick and its reasoning.
+log() { echo "$*"; }
+debug() { [ "$MODEM_DEBUG" = YES ] && echo "debug: $*"; return 0; }
+
+# States where the modem is alive and working on something.
+is_transitional() {
+    case "$1" in
+        initializing|enabling|enabled|searching|registered|connecting|disconnecting)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
+
+# ModemManager assigns a new index every time the modem reappears, so the
+# modem is always addressed by its D-Bus path.
+modem_path() {
+    mmcli -L 2>/dev/null \
+        | grep -o '/org/freedesktop/ModemManager1/Modem/[0-9]*' \
+        | head -n1
+}
+
+modem_state() {
+    mmcli -m "$1" -K 2>/dev/null \
+        | grep 'modem.generic.state ' \
+        | head -n1 | cut -d: -f2- | tr -d ' '
+}
+
+# The ping must go out through the modem, otherwise a working Ethernet uplink
+# would mask a dead modem.
+ping_ok() {
+    iface="$MODEM_IFACE"
+    if [ -z "$iface" ]; then
+        # NetworkManager names a GSM device after its control port, e.g.
+        # ttyUSB2, which is not a network interface. The data path lives on a
+        # separate IP interface - ppp0 for PPP bearers, wwanN for QMI/MBIM -
+        # so the device has to be asked for it.
+        dev=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+            | awk -F: '$2=="gsm"{print $1; exit}')
+        if [ -n "$dev" ]; then
+            iface=$(nmcli -t -f GENERAL.IP-IFACE device show "$dev" 2>/dev/null \
+                | cut -d: -f2)
+        fi
+        debug "interface auto-detected: ${iface:-none} (device ${dev:-none})"
+    else
+        debug "interface from config: $iface"
+    fi
+
+    if [ -z "$iface" ] || [ ! -d "/sys/class/net/$iface" ]; then
+        # An unbound ping would leave through Ethernet and report a dead modem
+        # as healthy, so the probe is skipped rather than answered wrongly.
+        [ "$changed" -eq 1 ] && \
+            log "WARNING: modem IP interface not identified - connectivity probe skipped. Set MODEM_IFACE in $CONF."
+        debug "no usable interface (${iface:-none}), skipping probe"
+        return 0
+    fi
+
+    for target in $MODEM_PING_TARGET $MODEM_PING_TARGET_2; do
+        if ping -c 1 -W 3 -I "$iface" "$target" >/dev/null 2>&1; then
+            debug "ping $target via $iface: reply"
+            return 0
+        fi
+        debug "ping $target via $iface: no reply"
+    done
+    return 1
+}
+
+# State: "<round> <phase> <not_before> <last_state> <last_probe>"
+#   phase 0 = round not started, soft reset is next
+#   phase 1 = soft reset done, hard reset is next
+#   phase 2 = both done, round exhausted
+read_state() {
+    round=0
+    phase=0
+    not_before=0
+    last_state=none
+    last_probe=0
+    if [ -r "$STATE_FILE" ]; then
+        read -r round phase not_before last_state last_probe < "$STATE_FILE" 2>/dev/null || true
+    fi
+    # Guard against a truncated or garbage state file.
+    case "$round" in ''|*[!0-9]*) round=0 ;; esac
+    case "$phase" in ''|*[!0-9]*) phase=0 ;; esac
+    case "$not_before" in ''|*[!0-9]*) not_before=0 ;; esac
+    case "$last_probe" in ''|*[!0-9]*) last_probe=0 ;; esac
+    [ -n "$last_state" ] || last_state=none
+    [ "$phase" -le 2 ] || phase=0
+}
+
+save_state() {
+    echo "$round $phase $not_before $state $last_probe" > "$STATE_FILE"
+}
+
+# Pause after a failed round: 1 min, then 5 min, then 15 min from there on.
+backoff_for() {
+    case "$1" in
+        1) echo 60 ;;
+        2) echo 300 ;;
+        *) echo 900 ;;
+    esac
+}
+
+now=$(date +%s)
+debug "woke up (tick)"
+read_state
+window_left=0
+[ "$not_before" -gt "$now" ] && window_left=$((not_before - now))
+debug "state file: round=$round phase=$phase last_state=$last_state window_left=${window_left}s"
+
+path=$(modem_path)
+if [ -n "$path" ]; then
+    state=$(modem_state "$path")
+    [ -n "$state" ] || state=unknown
+    debug "modem path: $path"
+else
+    state=absent
+    debug "modem path: none on D-Bus"
+fi
+debug "modem state: $state"
+
+# Only transitions are logged at normal level - at this tick rate, recording
+# every check would bury the journal.
+changed=0
+[ "$state" != "$last_state" ] && changed=1
+[ "$changed" -eq 1 ] && log "modem state: $state (round $round, phase $phase)"
+
+# A locked SIM is never reset: a reset cannot supply a PIN, and repeated
+# attempts would burn PIN retries and lock the card to PUK.
+if [ "$state" = locked ]; then
+    if [ "$changed" -eq 1 ]; then
+        log "SIM locked - no intervention (PUK risk). Fix the PIN in the NetworkManager profile."
+    else
+        debug "SIM still locked - no intervention"
+    fi
+    save_state
+    exit 0
+fi
+
+# Health is evaluated before any waiting window, so a modem that comes back
+# early ends the recovery immediately instead of sitting out the window.
+healthy=false
+hung=0
+if [ "$state" = connected ]; then
+    if [ "$round" -ne 0 ] || [ $((now - last_probe)) -ge "$MODEM_PING_INTERVAL" ]; then
+        [ "$round" -ne 0 ] && debug "probing every tick (recovery round $round in progress)"
+        last_probe=$now
+        if ping_ok; then
+            healthy=true
+        else
+            hung=1
+            debug "no connectivity despite state connected"
+        fi
+    else
+        # Connected, and the last probe within the interval succeeded.
+        healthy=true
+        debug "probe not due ($((now - last_probe))s of ${MODEM_PING_INTERVAL}s elapsed), assuming healthy"
+    fi
+else
+    debug "state is not connected, skipping probe"
+fi
+
+if [ "$healthy" = true ]; then
+    if [ "$round" -ne 0 ] || [ "$phase" -ne 0 ]; then
+        log "connectivity restored during round $round - clearing recovery state"
+        rm -f "$STATE_FILE"
+    else
+        debug "healthy, nothing to do"
+        save_state
+    fi
+    exit 0
+fi
+
+# Unhealthy. Inside the window granted to the last repair action, stay quiet
+# and give the modem the rest of its chance.
+if [ "$now" -lt "$not_before" ]; then
+    debug "waiting: $((not_before - now))s left of the current window (round $round, phase $phase)"
+    save_state
+    exit 0
+fi
+
+# Before any intervention, a modem that is still booting or registering is
+# left alone - that is normal startup, not a fault.
+if [ "$round" -eq 0 ] && is_transitional "$state"; then
+    debug "startup grace: state $state is transitional and no round has started"
+    save_state
+    exit 0
+fi
+
+if [ "$phase" -eq 2 ]; then
+    # Soft and hard were both tried in this round and the link is still down.
+    wait_for=$(backoff_for "$round")
+    log "round $round failed (soft and hard both tried), pausing ${wait_for}s before round $((round + 1))"
+    phase=0
+    not_before=$((now + wait_for))
+    save_state
+    exit 0
+fi
+
+if [ "$phase" -eq 0 ]; then
+    round=$((round + 1))
+    action=modem-soft-reset.service
+    wait_for=$MODEM_SETTLE_SOFT
+    phase=1
+else
+    action=modem-hard-reset.service
+    wait_for=$MODEM_SETTLE_HARD
+    phase=2
+fi
+
+# The reason is carried into the decision line so that production logs say
+# why an intervention happened, not just that it did. A hung link never
+# changes the modem state, so it would otherwise go unrecorded.
+if [ "$hung" -eq 1 ]; then
+    reason="link hung (state connected, no traffic)"
+else
+    reason="modem state $state"
+fi
+
+log "round $round: $reason -> starting $action, giving it up to ${wait_for}s"
+not_before=$((now + wait_for))
+save_state
+systemctl start --no-block "$action"

@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        systemctl disable --now modem-guard.timer >/dev/null 2>&1 || true
+        systemctl disable modem-power.service >/dev/null 2>&1 || true
+        # The modem is deliberately left powered: cutting power to it while
+        # removing a package could drop a link the operator is using.
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,194 @@
+#!/bin/sh
+# modem-gpio - drive the modem control lines, whichever hardware they sit on.
+#
+# Usage:
+#   modem-gpio init          prepare the backend (no-op for CPU lines)
+#   modem-gpio poweron       drive the power line to its "on" level
+#   modem-gpio powercycle    cut modem power and restore it   (hard reset)
+#   modem-gpio reset         pulse the modem reset line       (soft reset)
+#   modem-gpio set high|low PIN    drive one line, for manual use
+#
+# Two backends, chosen by MODEM_GPIO_BACKEND in /etc/modem.conf:
+#
+#   soc       Pins are CPU GPIO lines (BCM numbering), driven with pinctrl.
+#             Nothing has to be loaded or initialised.
+#
+#   expander  Pins are line offsets on an I2C GPIO chip such as the MCP23008,
+#             driven with libgpiod. The chip has to be instantiated first,
+#             which is what "init" does.
+#
+# The split exists so that a board without an expander never loads an I2C
+# driver it has no use for.
+#
+# Polarity assumed throughout: HIGH = powered on, LOW = reset asserted.
+
+set -u
+
+CONF=/etc/modem.conf
+[ -r "$CONF" ] && . "$CONF"
+
+: "${MODEM_GPIO_BACKEND:=expander}"
+: "${MODEM_I2C_BUS:=10}"
+: "${MODEM_I2C_ADDR:=0x21}"
+: "${MODEM_I2C_CHIP:=mcp23008}"
+: "${MODEM_RESET_GPIO:=}"
+: "${MODEM_POWER_GPIO:=}"
+: "${MODEM_RESET_PULSE:=1}"
+: "${MODEM_POWER_OFF_TIME:=1}"
+# The two lines do not necessarily share a polarity, and it differs between
+# boards, so neither is hardcoded. ACTIVE is the level that asserts reset,
+# and the level at which the modem is powered.
+: "${MODEM_RESET_ACTIVE:=high}"
+: "${MODEM_POWER_ACTIVE:=high}"
+
+# On the expander boards this supports, the modem lines are always wired to
+# the same two offsets, so they need no configuring. CPU-GPIO boards differ
+# from one another, which is why those ship with the pins unset and refuse to
+# run until someone fills them in.
+if [ "$MODEM_GPIO_BACKEND" = expander ]; then
+    : "${MODEM_RESET_GPIO:=6}"
+    : "${MODEM_POWER_GPIO:=7}"
+fi
+
+die() { echo "$*" >&2; exit 1; }
+
+opposite() {
+    case "$1" in
+        high) echo low ;;
+        low)  echo high ;;
+        *)    die "level must be high or low, got '$1'" ;;
+    esac
+}
+
+# sysfs names an I2C device "<bus>-<4 hex digits of address>", e.g. 1-0020.
+i2c_device_path() {
+    printf '/sys/bus/i2c/devices/%s-%04x' "$MODEM_I2C_BUS" "$((MODEM_I2C_ADDR))"
+}
+
+# The gpiochip number an expander gets is assigned at registration time and
+# depends on what else is present, so it is looked up rather than assumed.
+#
+# The lookup goes through /sys/bus/gpio/devices, whose entries correspond to
+# the /dev/gpiochipN character devices that libgpiod works with. The entry
+# under the I2C device's own gpio/ directory must NOT be used: it is the
+# legacy sysfs class node, named after the GPIO base number (gpiochip578),
+# which is not a character device and means nothing to gpioset.
+expander_chip() {
+    dev=$(readlink -f "$(i2c_device_path)" 2>/dev/null)
+    [ -n "$dev" ] || return 1
+    for c in /sys/bus/gpio/devices/gpiochip*; do
+        [ -e "$c" ] || continue
+        case "$(readlink -f "$c")" in
+            "$dev"/*)
+                basename "$c"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+backend_init() {
+    case "$MODEM_GPIO_BACKEND" in
+        soc)
+            return 0
+            ;;
+        expander)
+            modprobe gpio-mcp23s08 2>/dev/null || true
+
+            dev=$(i2c_device_path)
+            if [ -e "$dev" ]; then
+                echo "expander already present at $dev"
+            else
+                bus="/sys/bus/i2c/devices/i2c-$MODEM_I2C_BUS"
+                [ -d "$bus" ] || die "no I2C bus $MODEM_I2C_BUS - is I2C enabled?"
+                echo "$MODEM_I2C_CHIP $MODEM_I2C_ADDR" > "$bus/new_device" \
+                    || die "could not instantiate $MODEM_I2C_CHIP at $MODEM_I2C_ADDR"
+                echo "instantiated $MODEM_I2C_CHIP at $MODEM_I2C_ADDR on bus $MODEM_I2C_BUS"
+            fi
+
+            chip=$(expander_chip) || die "expander registered no gpiochip"
+            echo "expander available as $chip"
+            ;;
+        *)
+            die "unknown MODEM_GPIO_BACKEND '$MODEM_GPIO_BACKEND' (use soc or expander)"
+            ;;
+    esac
+}
+
+drive() {
+    level="$1"
+    pin="$2"
+
+    [ -n "$pin" ] || die "pin not configured - check the GPIO settings in $CONF"
+
+    case "$MODEM_GPIO_BACKEND" in
+        soc)
+            case "$level" in
+                high) dir=dh ;;
+                low)  dir=dl ;;
+                *)    die "level must be high or low" ;;
+            esac
+            pinctrl set "$pin" op "$dir" \
+                || die "pinctrl failed to drive pin $pin $dir"
+            ;;
+        expander)
+            case "$level" in
+                high) value=1 ;;
+                low)  value=0 ;;
+                *)    die "level must be high or low" ;;
+            esac
+            chip=$(expander_chip) \
+                || die "expander not initialised - run: modem-gpio init"
+            # The gpioset command line changed between libgpiod 1 and 2, and
+            # Bookworm ships 1 while Trixie ships 2.
+            major=$(gpioset --version 2>/dev/null | grep -oE '[0-9]+' | head -n1)
+            if [ "${major:-1}" -ge 2 ]; then
+                gpioset -t0 -c "$chip" "$pin=$value"
+            else
+                gpioset "$chip" "$pin=$value"
+            fi \
+                || die "gpioset failed on $chip line $pin - with this backend the pin is a line offset on the chip (0-7 for an MCP23008), not a global sysfs number"
+            ;;
+        *)
+            die "unknown MODEM_GPIO_BACKEND '$MODEM_GPIO_BACKEND' (use soc or expander)"
+            ;;
+    esac
+}
+
+case "${1:-}" in
+    init)
+        backend_init
+        ;;
+    poweron)
+        # The reset line is released first. A modem left asserted in reset by
+        # an interrupted operation would otherwise stay down even with power
+        # applied, which is exactly how a board gets stuck.
+        if [ -n "$MODEM_RESET_GPIO" ]; then
+            drive "$(opposite "$MODEM_RESET_ACTIVE")" "$MODEM_RESET_GPIO"
+        fi
+        drive "$MODEM_POWER_ACTIVE" "$MODEM_POWER_GPIO"
+        echo "power line $MODEM_POWER_GPIO set to $MODEM_POWER_ACTIVE (on)"
+        ;;
+    powercycle)
+        drive "$(opposite "$MODEM_POWER_ACTIVE")" "$MODEM_POWER_GPIO"
+        sleep "$MODEM_POWER_OFF_TIME"
+        drive "$MODEM_POWER_ACTIVE" "$MODEM_POWER_GPIO"
+        echo "power line $MODEM_POWER_GPIO cycled, off for ${MODEM_POWER_OFF_TIME}s"
+        ;;
+    reset)
+        # Ends on the inactive level: leaving the line asserted would hold the
+        # modem in reset for good.
+        drive "$MODEM_RESET_ACTIVE" "$MODEM_RESET_GPIO"
+        sleep "$MODEM_RESET_PULSE"
+        drive "$(opposite "$MODEM_RESET_ACTIVE")" "$MODEM_RESET_GPIO"
+        echo "reset line $MODEM_RESET_GPIO pulsed $MODEM_RESET_ACTIVE for ${MODEM_RESET_PULSE}s"
+        ;;
+    set)
+        [ $# -eq 3 ] || die "usage: modem-gpio set high|low PIN"
+        drive "$2" "$3"
+        ;;
+    *)
+        die "usage: modem-gpio init|poweron|powercycle|reset|set high|low PIN"
+        ;;
+esac

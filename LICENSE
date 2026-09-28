@@ -1,0 +1,53 @@
+MIT License
+
+Copyright (c) 2026 modem-guard contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+Additional notes
+
+This package is built entirely on open-source software and is itself open
+source. It is published as an example of how to put existing components
+together, nothing more.
+
+It is not a commercial product. No license fee is charged for it, and it
+contains no restrictions, limitations, gated features or any other mechanism
+constraining what may be done with it. Anyone is free to use, modify and
+redistribute it as they see fit.
+
+The only constraints that apply are those of the licenses of the third-party
+components this package relies on. Those components are not distributed with
+this package - they are installed from the distribution's own repositories -
+and each remains under its own license:
+
+  ModemManager                     GPL-2.0-or-later
+  NetworkManager                   GPL-2.0-or-later
+  libqmi / libmbim                 GPL-2.0-or-later (libraries LGPL-2.1+)
+  mobile-broadband-provider-info   public domain
+  systemd                          LGPL-2.1-or-later
+  raspi-utils (pinctrl)            BSD-3-Clause
+
+Refer to each project for its exact terms; the list above is a convenience
+summary, not a legal statement, and may change between distribution releases.
+
+The authors accept no responsibility or liability whatsoever for any use or
+modification of this software, or for any consequences of running it, including
+on production or field hardware.

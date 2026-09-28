@@ -1,0 +1,40 @@
+#!/bin/sh
+# Units are enabled but deliberately NOT started here.
+#
+# modem-power.service drives whatever GPIO /etc/modem.conf names, and the
+# shipped default is only a placeholder. Starting it before the administrator
+# has set the real pin would toggle an arbitrary line on the board.
+set -e
+
+case "$1" in
+    configure)
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable modem-gpio-init.service >/dev/null 2>&1 || true
+        systemctl enable modem-power.service >/dev/null 2>&1 || true
+        systemctl enable modem-guard.timer >/dev/null 2>&1 || true
+
+        if [ -z "$2" ]; then
+            # First install, not an upgrade.
+            cat <<'EOF'
+
+modem-guard installed. Before it can do anything useful:
+
+  1. Set both GPIO lines in /etc/modem.conf, from your board documentation:
+       MODEM_RESET_GPIO  - the modem's reset input (soft reset)
+       MODEM_POWER_GPIO  - the line controlling modem power (hard reset)
+     Check the polarity note in that file too.
+  2. Set the APN and PIN in
+     /etc/NetworkManager/system-connections/modem.nmconnection
+     then run: nmcli connection reload
+  3. Reboot, or start the units by hand:
+       systemctl start modem-power.service
+       systemctl start modem-guard.timer
+
+Nothing has been started yet, because the GPIO lines ship unset.
+
+EOF
+        fi
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,18 @@
+[Unit]
+Description=Periodic modem recovery check
+
+[Timer]
+# First check after the system has had time to boot and the modem to
+# enumerate.
+OnBootSec=60s
+# The tick is the resolution of every interval configured in
+# /etc/modem.conf: a 20 s settle window can only be honoured if the check
+# runs at least that often. Keep this well below the shortest configured
+# interval. A tick costs nothing when there is nothing to do - the script
+# exits immediately.
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=modem-guard.service
+
+[Install]
+WantedBy=timers.target

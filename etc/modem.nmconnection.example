@@ -1,0 +1,38 @@
+# GSM connection profile for NetworkManager.
+#
+# Target location: /etc/NetworkManager/system-connections/modem.nmconnection
+# REQUIRED permissions: root:root 0600 - with anything else NetworkManager
+# silently ignores the file.
+#
+# This file IS the connection configuration - APN, PIN and credentials are
+# edited directly here, not through any tool.
+# After editing: nmcli connection reload
+
+[connection]
+id=modem
+type=gsm
+# interface-name can be omitted - NetworkManager matches the modem itself.
+autoconnect=true
+# Automatic connection attempts. 0 = retry forever.
+autoconnect-retries=0
+
+[gsm]
+# APN. Must be set - without it NetworkManager dials with an empty APN and
+# the operator rejects the connection.
+apn=internet
+
+# SIM card PIN. Leave empty if the card has no PIN.
+#pin=1234
+
+# Credentials - only if the operator requires them.
+#username=
+#password=
+
+[ipv4]
+method=auto
+
+[ipv6]
+# Disabled outright. With method=auto NetworkManager also tries an IPv6-only
+# bearer, and on a network that does not offer one every attempt fails and
+# fills the log with errors that look like a fault.
+method=ignore

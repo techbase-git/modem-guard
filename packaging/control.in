@@ -1,0 +1,28 @@
+Package: modem-guard
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: all
+Depends: modemmanager,
+         network-manager,
+         raspi-utils,
+         iputils-ping,
+         systemd
+Recommends: gpiod
+Maintainer: modem-guard contributors <techbasegit@gmail.com>
+Homepage: https://github.com/@REPO@
+Description: Keeps a GSM modem connected, with soft and hard reset recovery
+ Connects a GSM modem at boot using a configured APN and keeps the link up,
+ recovering a wedged modem by escalating from a ModemManager soft reset to a
+ GPIO power cycle.
+ .
+ The work is done by ModemManager, NetworkManager and pinctrl; this package
+ adds only the decision logic that determines when a reset is warranted, plus
+ the systemd units that carry the resets out.
+ .
+ A hung bearer - the modem reporting "connected" while no traffic passes - is
+ detected by a ping bound to the modem's own interface, so a working Ethernet
+ uplink cannot mask a dead modem.
+ .
+ This package is an example of how to combine existing open-source components.
+ It is not a product and carries no warranty.

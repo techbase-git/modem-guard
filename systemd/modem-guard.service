@@ -1,0 +1,10 @@
+[Unit]
+Description=Modem recovery decision point
+Documentation=file:/etc/modem.conf
+After=ModemManager.service NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/modem-guard
+# Two ping targets at 2 packets with a 5 s timeout each bound the runtime.
+TimeoutStartSec=60

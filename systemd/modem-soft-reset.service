@@ -1,0 +1,10 @@
+[Unit]
+Description=Soft reset the modem (GPIO reset line)
+Documentation=file:/etc/modem.conf
+After=modem-gpio-init.service
+Requires=modem-gpio-init.service
+
+[Service]
+Type=oneshot
+# Pulses the modem's own reset input: the modem reboots, but keeps power.
+ExecStart=/usr/sbin/modem-gpio reset

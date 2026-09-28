@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|purge)
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        rm -f /run/modem-guard.state
+        ;;
+esac
+
+exit 0
