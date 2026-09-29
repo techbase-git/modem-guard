@@ -122,12 +122,18 @@ ping_ok() {
     debug "probe interface: ${iface:-none}"
 
     if [ -z "$iface" ] || [ ! -d "/sys/class/net/$iface" ]; then
-        # An unbound ping would leave through Ethernet and report a dead modem
-        # as healthy, so the probe is skipped rather than answered wrongly.
-        [ "$changed" -eq 1 ] && \
-            log "WARNING: modem IP interface not identified - connectivity probe skipped. Set MODEM_IFACE in $CONF."
-        debug "no usable interface (${iface:-none}), skipping probe"
-        return 0
+        if [ -n "$MODEM_IFACE" ]; then
+            # Named by hand and not there. That is a typo in the config, and
+            # resetting the modem does not fix a typo.
+            [ "$changed" -eq 1 ] && \
+                log "WARNING: MODEM_IFACE=$MODEM_IFACE does not exist - probe skipped, fix $CONF"
+            return 0
+        fi
+        # ModemManager reports the modem connected, so a bearer exists and it
+        # must have an interface. There is none, so the two disagree and the
+        # link cannot be carrying anything.
+        debug "state is connected but no IP interface exists"
+        return 1
     fi
 
     for target in $MODEM_PING_TARGET $MODEM_PING_TARGET_2; do

@@ -241,6 +241,12 @@ explicitly if detection picks the wrong one. Note that NetworkManager names a
 GSM *device* after its control port (`ttyUSB2`), which is not an interface;
 detection resolves that to the actual IP interface.
 
+A missing interface is read two different ways, depending on where the name
+came from. If detection found none while ModemManager reports the modem
+connected, the two disagree - a bearer exists but has nowhere to send - and
+recovery starts. If `MODEM_IFACE` names an interface by hand and it is not
+there, that is a typo in the config, which no reset will fix, so it only warns.
+
 ### 2. `/etc/NetworkManager/system-connections/modem.nmconnection` - connection
 
 APN, PIN and credentials.
