@@ -394,6 +394,54 @@ device always starts from a clean slate.
 
 ## Diagnostics
 
+### Are the services running?
+
+```sh
+systemctl is-enabled modem-gpio-init.service modem-power.service modem-guard.timer
+systemctl is-active  modem-gpio-init.service modem-power.service modem-guard.timer
+```
+
+A healthy system answers like this:
+
+| Unit | enabled | active |
+|---|---|---|
+| `modem-gpio-init.service` | `enabled` | `active` |
+| `modem-power.service` | `enabled` | `active` |
+| `modem-guard.timer` | `enabled` | `active` |
+| `modem-guard.service` | `static` | `inactive` |
+| `modem-soft-reset.service`, `modem-hard-reset.service` | `static` | `inactive` |
+
+Three answers look like faults and are not:
+
+- **`inactive` for `modem-guard.service`** is correct. It is a `oneshot`: the
+  timer starts it, it runs for a fraction of a second and exits. Between ticks
+  there is nothing to be active.
+- **`static`** is not "disabled". Those units have no `[Install]` section on
+  purpose, so they cannot be enabled or disabled - the timer starts the guard,
+  and the guard starts the reset units. Only the timer and the two boot-time
+  units are enabled.
+- **`active` for `modem-power.service` and `modem-gpio-init.service`** does not
+  mean a process is running. They are `oneshot` with `RemainAfterExit`, so
+  `active` records that the work succeeded - the line was driven, the expander
+  was prepared.
+
+What an actual fault looks like: `modem-gpio-init.service` in `failed`, and
+`modem-power.service` `inactive` as a consequence, because it requires it. The
+reason is in its log:
+
+```sh
+systemctl status modem-gpio-init.service --no-pager -l
+journalctl -u modem-gpio-init.service -b --no-pager
+```
+
+When the timer fires next, and when it last did:
+
+```sh
+systemctl list-timers modem-guard.timer --no-pager
+```
+
+### Logs
+
 Start here - everything this package does, in one stream:
 
 ```sh
