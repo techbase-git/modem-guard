@@ -53,6 +53,10 @@ STATE_FILE=/run/modem-guard.state
 # this is ignored and every tick probes, because that is when the result of a
 # repair action needs to be seen without delay.
 : "${MODEM_PING_INTERVAL:=60}"
+# How long a modem may sit in a transitional state before it counts as stuck.
+# Booting and registering legitimately take a while, but "registering" and
+# "wedged in registering" look identical, so the patience has to end.
+: "${MODEM_STARTUP_GRACE:=150}"
 # How often to record one line saying what the modem is doing, even when
 # nothing has changed [s]. Without it a healthy system logs nothing at all,
 # which reads exactly like a supervisor that is not running. 0 turns it off.
@@ -147,9 +151,10 @@ read_state() {
     last_state=none
     last_probe=0
     last_heartbeat=0
+    unhealthy_since=0
     if [ -r "$STATE_FILE" ]; then
         read -r round phase not_before last_state last_probe last_heartbeat \
-            < "$STATE_FILE" 2>/dev/null || true
+            unhealthy_since < "$STATE_FILE" 2>/dev/null || true
     fi
     # Guard against a truncated or garbage state file.
     case "$round" in ''|*[!0-9]*) round=0 ;; esac
@@ -157,12 +162,14 @@ read_state() {
     case "$not_before" in ''|*[!0-9]*) not_before=0 ;; esac
     case "$last_probe" in ''|*[!0-9]*) last_probe=0 ;; esac
     case "$last_heartbeat" in ''|*[!0-9]*) last_heartbeat=0 ;; esac
+    case "$unhealthy_since" in ''|*[!0-9]*) unhealthy_since=0 ;; esac
     [ -n "$last_state" ] || last_state=none
     [ "$phase" -le 2 ] || phase=0
 }
 
 save_state() {
-    echo "$round $phase $not_before $state $last_probe $last_heartbeat" > "$STATE_FILE"
+    echo "$round $phase $not_before $state $last_probe $last_heartbeat $unhealthy_since" \
+        > "$STATE_FILE"
 }
 
 # Pause after a failed round: 1 min, then 5 min, then 15 min from there on.
@@ -253,10 +260,15 @@ if [ "$healthy" = true ]; then
         rm -f "$STATE_FILE"
     else
         debug "healthy, nothing to do"
+        unhealthy_since=0
         save_state
     fi
     exit 0
 fi
+
+# Unhealthy from here. Remember since when, so the startup grace below can be
+# bounded rather than open-ended.
+[ "$unhealthy_since" -eq 0 ] && unhealthy_since=$now
 
 # Unhealthy. Inside the window granted to the last repair action, stay quiet
 # and give the modem the rest of its chance.
@@ -267,9 +279,13 @@ if [ "$now" -lt "$not_before" ]; then
 fi
 
 # Before any intervention, a modem that is still booting or registering is
-# left alone - that is normal startup, not a fault.
-if [ "$round" -eq 0 ] && is_transitional "$state"; then
-    debug "startup grace: state $state is transitional and no round has started"
+# left alone - that is normal startup, not a fault. The patience is bounded,
+# because a modem can sit in a transitional state indefinitely: registered on
+# the network with no data session is the most common real failure there is,
+# and it is indistinguishable from a modem still working on it.
+if [ "$round" -eq 0 ] && is_transitional "$state" \
+   && [ $((now - unhealthy_since)) -lt "$MODEM_STARTUP_GRACE" ]; then
+    debug "startup grace: $state for $((now - unhealthy_since))s of ${MODEM_STARTUP_GRACE}s"
     save_state
     exit 0
 fi
@@ -300,6 +316,8 @@ fi
 # changes the modem state, so it would otherwise go unrecorded.
 if [ "$hung" -eq 1 ]; then
     reason="link hung (state connected, no traffic)"
+elif is_transitional "$state"; then
+    reason="stuck in $state for $((now - unhealthy_since))s"
 else
     reason="modem state $state"
 fi

@@ -172,6 +172,7 @@ MODEM_PING_TARGET=8.8.8.8
 MODEM_PING_TARGET_2=1.1.1.1
 MODEM_IFACE=
 MODEM_PING_INTERVAL=60
+MODEM_STARTUP_GRACE=150
 MODEM_SETTLE_SOFT=30
 MODEM_SETTLE_HARD=60
 MODEM_HEARTBEAT=600
@@ -359,11 +360,17 @@ run.
 
 Two safeguards are built in:
 
-- **Startup is not a fault.** Before any intervention, transitional states
-  (`connecting`, `searching`, `registering`, `enabling`, `initializing`) are
-  left alone - that is a modem doing its job. Once a round is underway, the
-  settle windows serve as the grace period instead, so a modem that is briefly
-  absent because *we* just reset it is never mistaken for a failed repair.
+- **Startup is not a fault, but it does not last forever.** Before any
+  intervention, transitional states (`connecting`, `searching`, `registered`,
+  `enabling`, `initializing`) are left alone - that is a modem doing its job.
+  Only for `MODEM_STARTUP_GRACE` seconds, though. A modem sitting at
+  `registered` with no data session looks identical to one still working on
+  it, and that is the most common real failure there is - a rejected APN, a
+  SIM that has been pulled, an operator refusing the session. Once the grace
+  runs out, recovery starts and the log says `stuck in registered for 150s`.
+  Once a round is underway, the settle windows serve as the grace period
+  instead, so a modem that is briefly absent because *we* just reset it is
+  never mistaken for a failed repair.
 - **`locked` never triggers a reset.** A reset cannot supply a SIM PIN, and
   looping resets would burn PIN attempts and lock the card to PUK. A locked SIM
   stays locked and visible in the status output instead.
@@ -373,7 +380,11 @@ Two safeguards are built in:
 Everything the script remembers lives in one line in `/run/modem-guard.state`:
 
 ```
-1 1 1790064030 absent 1790064000
+1 1 1790064030 absent 1790064000 1790063900 1790063880
+│ │ │          │      │          │          └─ unhealthy_since - when the link
+│ │ │          │      │          │             last stopped being good, which
+│ │ │          │      │          │             bounds the startup grace
+│ │ │          │      │          └─ last_heartbeat - when one was last logged
 │ │ │          │      └─ last_probe  - when the link was last pinged
 │ │ │          └──────── last_state  - so only changes get logged
 │ │ └─────────────────── not_before  - absolute timestamp when the current
