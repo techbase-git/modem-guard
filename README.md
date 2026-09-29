@@ -394,14 +394,38 @@ device always starts from a clean slate.
 
 ## Diagnostics
 
+Start here - everything this package does, in one stream:
+
+```sh
+journalctl -f -u 'modem-*'
+```
+
+The individual units, when you want to narrow it down:
+
+```sh
+# decisions, state changes and the heartbeat - this is the one to read
+journalctl -u modem-guard.service -n 50 --no-pager
+
+# only ever logs when a reset actually ran.
+# "No entries" means none was needed, which is the healthy case
+journalctl -u modem-soft-reset.service -u modem-hard-reset.service
+
+# whether the GPIO backend came up at boot
+journalctl -u modem-gpio-init.service -b --no-pager
+
+# the layer underneath, where connection failures are explained
+journalctl -u ModemManager -u NetworkManager
+```
+
+Current state without waiting for a tick:
+
 ```sh
 mmcli -L                       # modems known to ModemManager
 mmcli -m <path>                # state, operator, signal, registration
 nmcli device status            # connection state and interface
 nmcli connection show modem    # active profile
-
-journalctl -u modem-guard.service          # every decision, with the observed state
-journalctl -u modem-soft-reset.service -u modem-hard-reset.service
+cat /run/modem-guard.state     # round, phase, window, last seen state
+systemctl list-timers modem-guard.timer --no-pager
 ```
 
 ### Log levels
