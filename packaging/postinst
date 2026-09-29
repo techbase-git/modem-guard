@@ -1,9 +1,7 @@
 #!/bin/sh
-# Units are enabled but deliberately NOT started here.
-#
-# modem-power.service drives whatever GPIO /etc/modem.conf names, and the
-# shipped default is only a placeholder. Starting it before the administrator
-# has set the real pin would toggle an arbitrary line on the board.
+# Units are enabled but deliberately NOT started here. Starting them would
+# drive GPIO lines and power the modem before anyone has checked that the
+# configuration matches this board.
 set -e
 
 case "$1" in
@@ -17,20 +15,28 @@ case "$1" in
             # First install, not an upgrade.
             cat <<'EOF'
 
-modem-guard installed. Before it can do anything useful:
+modem-guard installed. Nothing has been started yet. Before it can work:
 
-  1. Set both GPIO lines in /etc/modem.conf, from your board documentation:
-       MODEM_RESET_GPIO  - the modem's reset input (soft reset)
-       MODEM_POWER_GPIO  - the line controlling modem power (hard reset)
-     Check the polarity note in that file too.
-  2. Set the APN and PIN in
-     /etc/NetworkManager/system-connections/modem.nmconnection
+  1. Enable I2C, needed by the default expander backend. It is off on a
+     stock image. Add to /boot/firmware/config.txt:
+         dtparam=i2c_arm=on
+         dtparam=i2c0=on
+     then reboot. Check with: i2cdetect -y 10
+
+  2. Set the APN in
+         /etc/NetworkManager/system-connections/modem.nmconnection
      then run: nmcli connection reload
-  3. Reboot, or start the units by hand:
-       systemctl start modem-power.service
-       systemctl start modem-guard.timer
+     Without an APN the modem registers on the network but never connects.
 
-Nothing has been started yet, because the GPIO lines ship unset.
+  3. Check /etc/modem.conf. On boards with the modem lines on an I2C
+     expander the defaults already fit and nothing needs changing. Boards
+     driving the lines from CPU GPIOs must set MODEM_GPIO_BACKEND=soc and
+     fill in both pin numbers.
+
+  4. Reboot, or start the units by hand:
+         systemctl start modem-gpio-init.service
+         systemctl start modem-power.service
+         systemctl start modem-guard.timer
 
 EOF
         fi

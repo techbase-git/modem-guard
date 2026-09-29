@@ -6,5 +6,6 @@ After=ModemManager.service NetworkManager.service
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/modem-guard
-# Two ping targets at 2 packets with a 5 s timeout each bound the runtime.
+# Bounds the run. Two ping targets at one packet and a 3 s timeout each is
+# the worst case, so this leaves plenty of room.
 TimeoutStartSec=60

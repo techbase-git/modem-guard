@@ -69,6 +69,8 @@ systemd/modem-guard.{service,timer} runs the decision logic every 10 s
 - Two GPIO lines to the modem, one for reset and one for power. They may sit
   on the CPU or on an I2C expander - both are supported, see
   `MODEM_GPIO_BACKEND` below.
+- For the expander backend, which is the default: I2C enabled in
+  `/boot/firmware/config.txt`. It is off on a stock image - see below.
 
 Packages installed by the installer: `modemmanager`, `network-manager`,
 `libqmi-utils`, `libmbim-utils`, `raspi-utils`, and `gpiod` for the expander
@@ -76,18 +78,55 @@ backend.
 
 ## Installation
 
+### Before installing: enable I2C
+
+Only needed for the `expander` backend, which is the default. I2C is **off**
+on a stock Raspberry Pi OS, and without it the expander cannot be reached.
+
+Add to `/boot/firmware/config.txt`:
+
+```
+dtparam=i2c_arm=on    # I2C on the ARM GPIO header
+dtparam=i2c0=on
+```
+
+Then reboot - this is firmware configuration and does not take effect until
+the next boot. `sudo raspi-config` → Interface Options → I2C does the same
+thing through a menu.
+
+Check afterwards that the bus is there and the chip answers:
+
+```sh
+sudo apt install i2c-tools
+i2cdetect -l            # which buses exist
+i2cdetect -y 10         # the expander should show at its address
+```
+
+Note the bus number and address you see - they go into `MODEM_I2C_BUS` and
+`MODEM_I2C_ADDR` if they differ from the defaults.
+
 ### From the .deb (preferred)
 
 Download the package from the [releases page](../../releases) and install it:
 
 ```sh
+sudo apt update
 sudo apt install ./modem-guard_<version>_all.deb
 ```
 
-`apt` pulls in the dependencies, registers the config files as conffiles (your
-edits survive upgrades; dpkg asks before replacing a file you changed) and
-enables the units. It does **not** start them - see the note printed on
-install, and the configuration section below.
+**The `./` is required.** Without it apt reads the argument as a package name
+to look up in the repositories and reports that no such package exists. An
+absolute path works just as well.
+
+Use `apt`, not `dpkg -i`. `dpkg` only unpacks and configures the file it is
+given: it knows nothing about repositories and downloads nothing, so it stops
+with unmet dependencies. If that has already happened, `sudo apt -f install`
+pulls in what is missing and finishes the job.
+
+`apt` also registers the config files as conffiles - your edits survive
+upgrades, and dpkg asks before replacing a file you changed - and enables the
+units. It does **not** start them; see the note printed on install, and the
+configuration section below.
 
 The package is `Architecture: all`, so the same file works on arm64 and armhf.
 
