@@ -105,23 +105,31 @@ turning on I2C through `raspi-config` enables a different bus entirely.
 
 The overlay in [`overlays/i2c0-cm5.dts`](overlays/i2c0-cm5.dts) enables that
 bus and also publishes it as `i2c-0`, the numbering the device is sold
-configured for. A compiled `i2c0-cm5.dtbo` is in the same directory, so
-building it is optional:
+configured for.
+
+**The package does this for you.** Installing it on a CM5 copies the compiled
+overlay into `/boot/firmware/overlays/` and adds `dtoverlay=i2c0-cm5` to
+`config.txt`, then tells you to reboot. It is guarded three ways, because a
+broken `config.txt` means a trip to the device: only on BCM2712, only if the
+boot partition is mounted, and never a second time. `apt purge` removes both
+again, matching on a marker comment so an entry you added by hand survives.
+
+Nothing happens on a CM4 - the bus is reached differently there and loading
+this overlay would be wrong.
+
+By hand, if you prefer:
 
 ```sh
 sudo cp overlays/i2c0-cm5.dtbo /boot/firmware/overlays/
 echo 'dtoverlay=i2c0-cm5' | sudo tee -a /boot/firmware/config.txt
 ```
 
-To build it yourself instead:
+To build it from source instead of using the shipped `.dtbo`:
 
 ```sh
 sudo apt install device-tree-compiler
 dtc -@ -I dts -O dtb -o i2c0-cm5.dtbo overlays/i2c0-cm5.dts
 ```
-
-Do not load this overlay on a CM4 - the modem bus is reached differently
-there.
 
 #### Then, on either
 

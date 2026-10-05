@@ -42,6 +42,13 @@ install -m 644 "$ROOT/etc/modem.conf" "$STAGE/etc/modem.conf"
 install -m 600 "$ROOT/etc/modem.nmconnection.example" \
     "$STAGE/etc/NetworkManager/system-connections/modem.nmconnection"
 
+# The overlay is staged here rather than straight into /boot/firmware, which
+# may not be mounted when dpkg unpacks. postinst copies it across once it has
+# checked the board and that the directory exists.
+install -d -m 755 "$STAGE/usr/share/$PKG/overlays"
+install -m 644 "$ROOT/overlays/i2c0-cm5.dtbo" "$STAGE/usr/share/$PKG/overlays/"
+install -m 644 "$ROOT/overlays/i2c0-cm5.dts"  "$STAGE/usr/share/$PKG/overlays/"
+
 install -m 644 "$ROOT/README.md" "$STAGE/usr/share/doc/$PKG/README.md"
 install -m 644 "$ROOT/LICENSE" "$STAGE/usr/share/doc/$PKG/copyright"
 

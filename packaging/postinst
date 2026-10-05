@@ -4,6 +4,31 @@
 # configuration matches this board.
 set -e
 
+CONFIG_TXT=/boot/firmware/config.txt
+OVERLAY_SRC=/usr/share/modem-guard/overlays/i2c0-cm5.dtbo
+OVERLAY_DIR=/boot/firmware/overlays
+MARKER="# added by modem-guard"
+
+# On CM5 the bus carrying the expander is i2c6 and ships disabled, and no
+# dtparam turns it on - it needs this overlay. Installing it is guarded three
+# ways, because a broken config.txt costs a trip to the device: only on
+# BCM2712, only if the boot partition is actually mounted, and never twice.
+enable_cm5_i2c() {
+    grep -qa bcm2712 /proc/device-tree/compatible 2>/dev/null || return 0
+    [ -f "$OVERLAY_SRC" ] || return 0
+    [ -d "$OVERLAY_DIR" ] || return 0
+    [ -f "$CONFIG_TXT" ] || return 0
+
+    cp "$OVERLAY_SRC" "$OVERLAY_DIR/" || return 0
+
+    if grep -q '^dtoverlay=i2c0-cm5' "$CONFIG_TXT"; then
+        return 0
+    fi
+
+    printf '\n%s\ndtoverlay=i2c0-cm5\n' "$MARKER" >> "$CONFIG_TXT"
+    echo "modem-guard: enabled i2c-0 in $CONFIG_TXT - takes effect after a reboot"
+}
+
 case "$1" in
     configure)
         systemctl daemon-reload >/dev/null 2>&1 || true
@@ -11,27 +36,27 @@ case "$1" in
         systemctl enable modem-power.service >/dev/null 2>&1 || true
         systemctl enable modem-guard.timer >/dev/null 2>&1 || true
 
+        enable_cm5_i2c
+
         if [ -z "$2" ]; then
             # First install, not an upgrade.
             cat <<'EOF'
 
 modem-guard installed. Nothing has been started yet. Before it can work:
 
-  1. Enable I2C, needed by the default expander backend. It is off on a
-     stock image. Add to /boot/firmware/config.txt:
-         dtparam=i2c_arm=on
-         dtparam=i2c0=on
-     then reboot. Check with: i2cdetect -y 10
-
-  2. Set the APN in
+  1. Set the APN in
          /etc/NetworkManager/system-connections/modem.nmconnection
      then run: nmcli connection reload
      Without an APN the modem registers on the network but never connects.
 
-  3. Check /etc/modem.conf. On boards with the modem lines on an I2C
+  2. Check /etc/modem.conf. On boards with the modem lines on an I2C
      expander the defaults already fit and nothing needs changing. Boards
      driving the lines from CPU GPIOs must set MODEM_GPIO_BACKEND=soc and
      fill in both pin numbers.
+
+  3. On CM4, I2C still has to be enabled by hand - add dtparam=i2c_arm=on
+     and dtparam=i2c0=on to /boot/firmware/config.txt. On CM5 this install
+     has done it already.
 
   4. Reboot, or start the units by hand:
          systemctl start modem-gpio-init.service

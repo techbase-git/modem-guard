@@ -8,4 +8,16 @@ case "$1" in
         ;;
 esac
 
+case "$1" in
+    purge)
+        # Undo the boot configuration this package added, and only that: the
+        # marker line is what identifies it, so an entry put there by hand is
+        # left alone.
+        if [ -f /boot/firmware/config.txt ]; then
+            sed -i '/^# added by modem-guard$/,+1d' /boot/firmware/config.txt || true
+        fi
+        rm -f /boot/firmware/overlays/i2c0-cm5.dtbo
+        ;;
+esac
+
 exit 0
