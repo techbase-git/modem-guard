@@ -53,6 +53,8 @@ BOOT
 ```
 bin/modem-guard                     decision logic - when to intervene
 bin/modem-gpio                      drives the control lines, both backends
+overlays/i2c0-cm5.dts               device tree overlay enabling i2c-0 on CM5
+overlays/i2c0-cm5.dtbo              the same, compiled, ready to copy to /boot
 etc/modem.conf                      GPIO backend and lines, ping, timings
 etc/modem.nmconnection.example      APN/PIN - NetworkManager keyfile
 systemd/modem-gpio-init.service     prepares the GPIO backend at boot
@@ -81,7 +83,10 @@ backend.
 ### Before installing: enable I2C
 
 Only needed for the `expander` backend, which is the default. I2C is **off**
-on a stock Raspberry Pi OS, and without it the expander cannot be reached.
+on a stock Raspberry Pi OS, and without it the expander cannot be reached. How
+to turn it on differs between CM4 and CM5.
+
+#### CM4
 
 Add to `/boot/firmware/config.txt`:
 
@@ -90,11 +95,38 @@ dtparam=i2c_arm=on    # I2C on the ARM GPIO header
 dtparam=i2c0=on
 ```
 
-Then reboot - this is firmware configuration and does not take effect until
-the next boot. `sudo raspi-config` → Interface Options → I2C does the same
-thing through a menu.
+`sudo raspi-config` → Interface Options → I2C does the same through a menu.
 
-Check afterwards that the bus is there and the chip answers:
+#### CM5
+
+`dtparam` is not enough here. The bus carrying the expander is brought out on
+pins 38/39, which on BCM2712 is `i2c6`, and it is disabled by default -
+turning on I2C through `raspi-config` enables a different bus entirely.
+
+The overlay in [`overlays/i2c0-cm5.dts`](overlays/i2c0-cm5.dts) enables that
+bus and also publishes it as `i2c-0`, the numbering the device is sold
+configured for. A compiled `i2c0-cm5.dtbo` is in the same directory, so
+building it is optional:
+
+```sh
+sudo cp overlays/i2c0-cm5.dtbo /boot/firmware/overlays/
+echo 'dtoverlay=i2c0-cm5' | sudo tee -a /boot/firmware/config.txt
+```
+
+To build it yourself instead:
+
+```sh
+sudo apt install device-tree-compiler
+dtc -@ -I dts -O dtb -o i2c0-cm5.dtbo overlays/i2c0-cm5.dts
+```
+
+Do not load this overlay on a CM4 - the modem bus is reached differently
+there.
+
+#### Then, on either
+
+Reboot. This is firmware configuration and does not take effect until the next
+boot. Afterwards check that the bus is there and the chip answers:
 
 ```sh
 sudo apt install i2c-tools
@@ -103,7 +135,9 @@ i2cdetect -y 10         # the expander should show at its address
 ```
 
 Note the bus number and address you see - they go into `MODEM_I2C_BUS` and
-`MODEM_I2C_ADDR` if they differ from the defaults.
+`MODEM_I2C_ADDR` if they differ from the defaults. `UU` in the grid means the
+address is already claimed by a driver, which is what you want once the
+expander has been instantiated.
 
 ### From the .deb (preferred)
 

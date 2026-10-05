@@ -1,0 +1,41 @@
+/*
+ * Expose the modem I2C bus as i2c-0 on Compute Module 5.
+ *
+ * The expander carrying the modem reset and power lines sits on the bus
+ * brought out on pins 38/39. On BCM2712 that is i2c6, and it is disabled by
+ * default - so without this overlay the bus simply does not exist and
+ * modem-gpio cannot reach the chip. Enabling I2C through raspi-config or
+ * dtparam=i2c_arm=on does not help: those turn on a different bus.
+ *
+ * The symlink property also publishes it as i2c-0, which is the numbering the
+ * device is sold configured for.
+ *
+ * Build:
+ *   dtc -@ -I dts -O dtb -o i2c0-cm5.dtbo i2c0-cm5.dts
+ *
+ * Install:
+ *   cp i2c0-cm5.dtbo /boot/firmware/overlays/
+ *   echo 'dtoverlay=i2c0-cm5' >> /boot/firmware/config.txt
+ *   reboot
+ *
+ * CM5 only. On CM4 the modem bus is reached differently, so do not load it
+ * there.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2712";
+
+    fragment@0 {
+        target = <&i2c6>;
+        __overlay__ {
+            status = "okay";
+            clock-frequency = <400000>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&rp1_i2c6_38_39>;
+            symlink = "i2c-0";
+        };
+    };
+};
